@@ -19,9 +19,9 @@ def one_qubit_unitary(bit, inputs):
         [cirq.Circuit]: 1-qubit unitary gate.
     """
     return cirq.Circuit(
-        cirq.rx(inputs[0])(bit),
-        cirq.ry(inputs[1])(bit),
-        cirq.rz(inputs[2])(bit)
+        cirq.X(bit) ** inputs[0],
+        cirq.Y(bit) ** inputs[1],
+        cirq.Z(bit) ** inputs[2],
     )
 
 
@@ -35,8 +35,7 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         self.depth = depth
         self.batch_size = batch_size
         self.q_weights = tf.Variable(
-            initial_value=np.random.uniform(
-                0, 2 * np.pi, (1, self.num_weights)),
+            initial_value=np.random.uniform(-1, 1, (1, self.num_weights)),
             dtype="float32",
             trainable=True)
         self.pqc = self.build_model()
