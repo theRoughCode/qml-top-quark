@@ -71,6 +71,12 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         trainable_params = np.asarray(trainable_params).reshape(
             (self.num_layers, self.num_qubits, 3))
 
+        # Define explicit symbol order to follow the alphabetical order of their symbol names,
+        # as processed by the ControlledPQC.
+        symbols = [str(symb) for symb in list(
+            encoding_params.flat) + list(trainable_params.flat)]
+        self.indices = tf.constant([sorted(symbols).index(a) for a in symbols])
+
         # Create circuit
         circuit = cirq.Circuit()
         for l in range(self.num_layers):
@@ -114,6 +120,8 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
                              repeats=batch_size, name='tile_circuits')
         model_params = tf.concat(
             [flattened, thetas], axis=-1, name='concat_model_params')
+        model_params = tf.gather(
+            model_params, self.indices, axis=-1, name='permute_model_params')
 
         return self.pqc([circuits, model_params])
 
