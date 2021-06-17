@@ -40,95 +40,121 @@ def create_quple_vqc_model(num_qubits, include_classical=False, depth=2):
     return vqc
 
 
-def FirstOrderPauliZEncoding(qubits, inputs, copies=1):
+def FirstOrderPauliZEncoding(qubits, encoding_params, copies=1):
     circuit = cirq.Circuit()
     for _ in range(copies):
-        for qubit, input in zip(qubits, inputs):
+        for qubit, input in zip(qubits, encoding_params):
             circuit += cirq.H(qubit)
             circuit += cirq.Z(qubit) ** input
     return circuit
 
 
-def EfficientSU2(qubits, inputs, copies=1):
+def EfficientSU2(qubits, ansatz_params, copies=1):
     circuit = cirq.Circuit()
-    for i in range(copies + 1):
-        for qubit in qubits:
-            circuit += cirq.Y(qubit) ** inputs[0]
-            circuit += cirq.Z(qubit) ** inputs[1]
-            inputs = inputs[2:]
+    for l in range(copies + 1):
+        circuit += cirq.Circuit(cirq.Y(q) **
+                                ansatz_params[l, i, 0] for i, q in enumerate(qubits))
+        circuit += cirq.Circuit(cirq.Z(q) **
+                                ansatz_params[l, i, 1] for i, q in enumerate(qubits))
 
         # Entanglement strategy
-        if i < copies:
-            for i in range(len(qubits) - 1):
-                circuit += cirq.CNOT(qubits[i], qubits[i+1])
+        if l < copies:
+            circuit += [cirq.CNOT(q0, q1)
+                        for q0, q1 in zip(qubits, qubits[1:])]
 
-    return circuit
-
-
-def readout_prep(qubits, readout, inputs):
-    circuit = cirq.Circuit()
-    for qubit, input in zip(qubits, inputs):
-        circuit += cirq.XX(qubit, readout) ** input
     return circuit
 
 
 class VQC(tf.keras.layers.Layer):
-    def __init__(self, num_qubits, encoding_copies, ansatz_copies, batch_size):
+    """Create a variational quantum circuit.
+
+    Args:
+        num_qubits (integer): Number of qubits.
+        encoding_copies (integer): Number of encoding repetitions.
+        ansatz_copies (integer): Number of variational repetitions.
+        name (str, optional): Model name. Defaults to 'vqc'.
+    """
+
+    def __init__(self, num_qubits, encoding_copies, ansatz_copies, name='vqc'):
         super(VQC, self).__init__()
         self.num_qubits = num_qubits
         self.encoding_copies = encoding_copies
         self.ansatz_copies = ansatz_copies
+
+        # Encode inputs in groups of 3
         self.num_ansatz_params = self.num_qubits * (ansatz_copies + 1) * 2
         self.num_readout_params = self.num_qubits
+
+        weights_init = tf.random_uniform_initializer(minval=-1.0, maxval=1.0)
         self.num_weights = self.num_ansatz_params + self.num_readout_params
-        self.batch_size = batch_size
-        self.q_weights = tf.Variable(
-            initial_value=np.random.uniform(-1, 1, (1, self.num_weights)),
-            dtype="float32",
-            trainable=True)
+        self.thetas = tf.Variable(
+            initial_value=weights_init(
+                shape=(1, self.num_weights), dtype='float32'),
+            trainable=True,
+            name='thetas')
+        self.empty_circuit = tfq.convert_to_tensor([cirq.Circuit()])
+
         self.pqc = self.build_model()
 
     def build_model(self):
         qubits = cirq.GridQubit.rect(1, self.num_qubits)
         readout = cirq.GridQubit(-1, -1)
-        # 1-local operators to read out
         readouts = [cirq.Z(readout)]
 
-        encoding_params = sympy.symbols('x0:{}'.format(self.num_qubits))
-        ansatz_params = sympy.symbols(
-            'ansatz0:{}'.format(self.num_ansatz_params))
-        readout_params = sympy.symbols(
-            'readout0:{}'.format(self.num_readout_params))
+        # Sympy symbols for encoding inputs
+        encoding_params = sympy.symbols(f'x_0:{self.num_qubits}')
+        encoding_params = np.asarray(encoding_params)
 
+        # Sympy symbols for trainable parameters
+        ansatz_params = sympy.symbols('θ_0:{}'.format(self.num_ansatz_params))
+        ansatz_params = np.asarray(ansatz_params).reshape(
+            (self.ansatz_copies + 1, self.num_qubits, 2))
+        readout_params = sympy.symbols(
+            'readout_0:{}'.format(self.num_readout_params))
+        readout_params = np.asarray(readout_params)
+
+        # Define explicit symbol order to follow the alphabetical order of their symbol names,
+        # as processed by the ControlledPQC.
+        symbols = [str(symb) for symb in list(encoding_params.flat) +
+                   list(ansatz_params.flat) + list(readout_params.flat)]
+        self.indices = tf.constant([sorted(symbols).index(a) for a in symbols])
+
+        # Create circuit
         circuit = cirq.Circuit()
+        # Encoding layer
         circuit += FirstOrderPauliZEncoding(qubits,
                                             encoding_params, copies=self.encoding_copies)
+        # Variational layer
         circuit += EfficientSU2(qubits, ansatz_params,
                                 copies=self.ansatz_copies)
-        circuit += readout_prep(qubits, readout, readout_params)
+        # Preparing readout qubit
+        circuit += cirq.Circuit(cirq.XX(q, readout) **
+                                param for q, param in zip(qubits, readout_params))
 
         pqc = tfq.layers.ControlledPQC(circuit, readouts)
 
         return pqc
 
     def call(self, inputs):
-        # Duplicate weights across batch
-        weights = tf.tile(
-            self.q_weights, (self.batch_size, 1), name='tile_weights')
-        # Flatten sub-image
-        flattened = tf.keras.layers.Flatten(name='flatten')(inputs)
-        # Prepare inputs
-        input_q_circ = tfq.convert_to_tensor(
-            [cirq.Circuit() for _ in range(self.batch_size)])
+        batch_size = tf.shape(inputs)[0]
+
+        # Duplicate thetas across batch
+        thetas = tf.tile(self.thetas, multiples=[
+                         batch_size, 1], name='tile_weights')
+
+        circuits = tf.repeat(self.empty_circuit,
+                             repeats=batch_size, name='tile_circuits')
         model_params = tf.concat(
-            [flattened, weights], axis=-1, name='concat_model_params')
-        out = self.pqc([input_q_circ, model_params])
-        return out
+            [inputs, thetas], axis=-1, name='concat_model_params')
+        model_params = tf.gather(
+            model_params, self.indices, axis=-1, name='permute_model_params')
+
+        return self.pqc([circuits, model_params])
 
 
-def create_vqc_model(num_features, encoding_copies, ansatz_copies, batch_size, with_classical=False):
+def create_vqc_model(num_features, encoding_copies, ansatz_copies, with_classical=False):
     inputs = tf.keras.Input(shape=(num_features,), dtype=tf.dtypes.float32)
-    x = VQC(num_features, encoding_copies, ansatz_copies, batch_size)(inputs)
+    x = VQC(num_features, encoding_copies, ansatz_copies)(inputs)
 
     if with_classical:
         out = tf.keras.layers.Dense(1, activation='sigmoid')(x)

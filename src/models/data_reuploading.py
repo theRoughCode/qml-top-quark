@@ -126,9 +126,9 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         return self.pqc([circuits, model_params])
 
 
-def create_model(num_features, num_qubits, depth, batch_size, include_classical=False):
+def create_reuploading_model(num_features, num_qubits, depth, include_classical=False):
     inputs = tf.keras.Input(shape=(num_features,), dtype=tf.dtypes.float32)
-    x = ReuploadingCircuit(num_features, num_qubits, depth, batch_size)(inputs)
+    x = ReuploadingCircuit(num_features, num_qubits, depth)(inputs)
 
     if include_classical:
         out = tf.keras.layers.Dense(1, activation='sigmoid')(x)
