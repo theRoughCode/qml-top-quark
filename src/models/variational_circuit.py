@@ -159,6 +159,88 @@ class VQC(tf.keras.layers.Layer):
         return self.pqc([circuits, model_params])
 
 
+class SecondOrderVQC(tf.keras.layers.Layer):
+    """Create a variational quantum circuit with second order feature map.
+
+    Args:
+        num_qubits (integer): Number of qubits.
+        encoding_copies (integer): Number of encoding repetitions.
+        ansatz_copies (integer): Number of variational repetitions.
+        name (str, optional): Model name. Defaults to 'vqc'.
+    """
+
+    def __init__(self, num_qubits, encoding_copies, ansatz_copies, name='second_order_vqc'):
+        super(SecondOrderVQC, self).__init__()
+        self.num_qubits = num_qubits
+        self.encoding_copies = encoding_copies
+        self.ansatz_copies = ansatz_copies
+
+        self.num_ansatz_params = self.num_qubits * (ansatz_copies + 1) * 2
+
+        weights_init = tf.random_uniform_initializer(minval=-1.0, maxval=1.0)
+        self.num_weights = self.num_ansatz_params
+        self.thetas = tf.Variable(
+            initial_value=weights_init(
+                shape=(1, self.num_weights), dtype='float32'),
+            trainable=True,
+            name='thetas')
+        self.empty_circuit = tfq.convert_to_tensor([cirq.Circuit()])
+
+        self.pqc = self.build_model()
+
+    def build_model(self):
+        qubits = cirq.GridQubit.rect(1, self.num_qubits)
+        readouts = [cirq.Z(readout) for readout in qubits]
+
+        # Sympy symbols for encoding inputs
+        encoding_params = sympy.symbols(f'x_0:{self.num_qubits}')
+        encoding_params = np.asarray(encoding_params)
+        entangling_params = sympy.symbols(f'x1_0:{self.num_qubits - 1}')
+        entangling_params = np.asarray(entangling_params)
+
+        # Sympy symbols for trainable parameters
+        ansatz_params = sympy.symbols('θ_0:{}'.format(self.num_ansatz_params))
+        ansatz_params = np.asarray(ansatz_params).reshape(
+            (self.ansatz_copies + 1, self.num_qubits, 2))
+
+        # Define explicit symbol order to follow the alphabetical order of their symbol names,
+        # as processed by the ControlledPQC.
+        symbols = [str(symb) for symb in list(
+            encoding_params.flat) + list(entangling_params.flat) + list(ansatz_params.flat)]
+        self.indices = tf.constant([sorted(symbols).index(a) for a in symbols])
+
+        # Create circuit
+        circuit = cirq.Circuit()
+        # Encoding layer
+        circuit += SecondOrderPauliZEncoding(
+            qubits, encoding_params, entangling_params, copies=self.encoding_copies)
+        # Variational layer
+        circuit += EfficientSU2(qubits, ansatz_params,
+                                copies=self.ansatz_copies)
+
+        pqc = tfq.layers.ControlledPQC(circuit, readouts)
+
+        return pqc
+
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+
+        second_order_inputs = tf.math.multiply(inputs[:, :-1], inputs[:, 1:])
+
+        # Duplicate thetas across batch
+        thetas = tf.tile(self.thetas, multiples=[
+                         batch_size, 1], name='tile_weights')
+
+        circuits = tf.repeat(self.empty_circuit,
+                             repeats=batch_size, name='tile_circuits')
+        model_params = tf.concat(
+            [inputs, second_order_inputs, thetas], axis=-1, name='concat_model_params')
+        model_params = tf.gather(
+            model_params, self.indices, axis=-1, name='permute_model_params')
+
+        return self.pqc([circuits, model_params])
+
+
 def create_vqc_model(num_features, encoding_copies, ansatz_copies, with_classical=False):
     inputs = tf.keras.Input(shape=(num_features,), dtype=tf.dtypes.float32)
     x = VQC(num_features, encoding_copies, ansatz_copies)(inputs)
