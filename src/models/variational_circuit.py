@@ -48,6 +48,21 @@ def FirstOrderPauliZEncoding(qubits, encoding_params, copies=1):
             circuit += cirq.Z(qubit) ** input
     return circuit
 
+def SecondOrderPauliZEncoding(qubits, rotation_params, entangling_params, copies=1):
+  circuit = cirq.Circuit()
+  circuit += [cirq.H(q) for q in qubits]
+
+  for _ in range(copies):
+    for qubit, input in zip(qubits, rotation_params):
+      circuit += cirq.Z(qubit) ** input
+
+    for q1, q2, param in zip(qubits, qubits[1:], entangling_params):
+      circuit += cirq.CNOT(q1, q2)
+      circuit += cirq.Z(q2) ** param
+      circuit += cirq.CNOT(q1, q2)
+
+  return circuit
+
 
 def EfficientSU2(qubits, ansatz_params, copies=1):
     circuit = cirq.Circuit()
@@ -59,8 +74,7 @@ def EfficientSU2(qubits, ansatz_params, copies=1):
 
         # Entanglement strategy
         if l < copies:
-            circuit += [cirq.CNOT(q0, q1)
-                        for q0, q1 in zip(qubits, qubits[1:])]
+            circuit += [cirq.CNOT(q0, q1) for q0, q1 in zip(qubits, qubits[1:])]
 
     return circuit
 
@@ -81,7 +95,6 @@ class VQC(tf.keras.layers.Layer):
         self.encoding_copies = encoding_copies
         self.ansatz_copies = ansatz_copies
 
-        # Encode inputs in groups of 3
         self.num_ansatz_params = self.num_qubits * (ansatz_copies + 1) * 2
         self.num_readout_params = self.num_qubits
 
