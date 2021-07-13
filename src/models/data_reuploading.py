@@ -47,12 +47,17 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         self.num_params = self.num_encoding_blocks * 3
 
         weights_init = tf.random_uniform_initializer(minval=-1.0, maxval=1.0)
-        self.num_weights = self.num_qubits * self.num_layers * 3
+        self.num_weights = self.num_qubits * self.num_layers * self.num_params
         self.thetas = tf.Variable(
             initial_value=weights_init(
                 shape=(1, self.num_weights), dtype='float32'),
             trainable=True,
             name='thetas')
+        self.w = tf.Variable(
+            initial_value=weights_init(
+                shape=(1, self.num_weights), dtype='float32'),
+            trainable=True,
+            name='w')
         self.empty_circuit = tfq.convert_to_tensor([cirq.Circuit()])
 
         self.pqc = self.build_model()
@@ -62,32 +67,22 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         readouts = [cirq.Z(qubits[-1])]
 
         # Sympy symbols for encoding inputs
-        encoding_params = sympy.symbols(f'x_0:{self.num_encoding_blocks * 3}')
+        encoding_params = sympy.symbols(f'x_0:{self.num_weights}')
         encoding_params = np.asarray(encoding_params).reshape(
-            (self.num_encoding_blocks, 3))
-
-        # Sympy symbols for trainable parameters
-        trainable_params = sympy.symbols(f'θ_0:{self.num_weights}')
-        trainable_params = np.asarray(trainable_params).reshape(
-            (self.num_layers, self.num_qubits, 3))
+            (self.num_layers, self.num_qubits, self.num_encoding_blocks, 3))
 
         # Define explicit symbol order to follow the alphabetical order of their symbol names,
         # as processed by the ControlledPQC.
-        symbols = [str(symb) for symb in list(
-            encoding_params.flat) + list(trainable_params.flat)]
+        symbols = [str(symb) for symb in list(encoding_params.flat)]
         self.indices = tf.constant([sorted(symbols).index(a) for a in symbols])
 
         # Create circuit
         circuit = cirq.Circuit()
         for l in range(self.num_layers):
             # Encoding layer
-            for q in qubits:
+            for i, q in enumerate(qubits):
                 circuit += cirq.Circuit(one_qubit_unitary(
-                    q, encoding_params[b]) for b in range(self.num_encoding_blocks))
-
-            # Variational layer
-            circuit += cirq.Circuit(one_qubit_unitary(q,
-                                    trainable_params[l, i]) for i, q in enumerate(qubits))
+                    q, encoding_params[l, i, b]) for b in range(self.num_encoding_blocks))
 
             # Entangling layer
             if self.num_qubits > 1:
@@ -106,12 +101,23 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
         # Duplicate thetas across batch
         thetas = tf.tile(self.thetas, multiples=[
                          batch_size, 1], name='tile_weights')
+        w = tf.tile(self.w, multiples=[
+            batch_size, 1], name='tile_input_weights')
 
         # Pad tensors if necessary
         num_padding = self.num_params - inputs.shape[1]
         if num_padding != 0:
             inputs = tf.pad(inputs, tf.constant(
-                [[0, 0, ], [0, num_padding]]), name='pad_inputs')
+                [[0, 0], [0, num_padding]]), name='pad_inputs')
+
+        # Duplicate inputs across qubits and layers
+        inputs = tf.tile(inputs, tf.constant(
+            [1, self.num_qubits * self.num_layers]), name='pad_inputs')
+
+        # Scale inputs
+        inputs = tf.math.multiply(inputs, w, name='scale_inputs')
+        inputs = tf.math.add(inputs, thetas, name='shift_inputs')
+        inputs = tf.keras.activations.tanh(inputs)
 
         # Flatten inputs
         flattened = tf.keras.layers.Flatten(name='flatten')(inputs)
