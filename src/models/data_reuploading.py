@@ -64,7 +64,7 @@ class ReuploadingCircuit(tf.keras.layers.Layer):
 
     def build_model(self):
         qubits = cirq.GridQubit.rect(1, self.num_qubits)
-        readouts = [cirq.Z(qubits[-1])]
+        readouts = [cirq.Z(qubit) for qubit in qubits]
 
         # Sympy symbols for encoding inputs
         encoding_params = sympy.symbols(f'x_0:{self.num_weights}')
