@@ -48,20 +48,21 @@ def FirstOrderPauliZEncoding(qubits, encoding_params, copies=1):
             circuit += cirq.Z(qubit) ** input
     return circuit
 
+
 def SecondOrderPauliZEncoding(qubits, rotation_params, entangling_params, copies=1):
-  circuit = cirq.Circuit()
-  circuit += [cirq.H(q) for q in qubits]
+    circuit = cirq.Circuit()
+    circuit += [cirq.H(q) for q in qubits]
 
-  for _ in range(copies):
-    for qubit, input in zip(qubits, rotation_params):
-      circuit += cirq.Z(qubit) ** input
+    for _ in range(copies):
+        for qubit, input in zip(qubits, rotation_params):
+            circuit += cirq.Z(qubit) ** input
 
-    for q1, q2, param in zip(qubits, qubits[1:], entangling_params):
-      circuit += cirq.CNOT(q1, q2)
-      circuit += cirq.Z(q2) ** param
-      circuit += cirq.CNOT(q1, q2)
+        for q1, q2, param in zip(qubits, qubits[1:], entangling_params):
+            circuit += cirq.CNOT(q1, q2)
+            circuit += cirq.Z(q2) ** param
+            circuit += cirq.CNOT(q1, q2)
 
-  return circuit
+    return circuit
 
 
 def EfficientSU2(qubits, ansatz_params, copies=1):
@@ -74,7 +75,8 @@ def EfficientSU2(qubits, ansatz_params, copies=1):
 
         # Entanglement strategy
         if l < copies:
-            circuit += [cirq.CNOT(q0, q1) for q0, q1 in zip(qubits, qubits[1:])]
+            circuit += [cirq.CNOT(q0, q1)
+                        for q0, q1 in zip(qubits, qubits[1:])]
 
     return circuit
 
@@ -96,10 +98,9 @@ class VQC(tf.keras.layers.Layer):
         self.ansatz_copies = ansatz_copies
 
         self.num_ansatz_params = self.num_qubits * (ansatz_copies + 1) * 2
-        self.num_readout_params = self.num_qubits
 
         weights_init = tf.random_uniform_initializer(minval=-1.0, maxval=1.0)
-        self.num_weights = self.num_ansatz_params + self.num_readout_params
+        self.num_weights = self.num_ansatz_params
         self.thetas = tf.Variable(
             initial_value=weights_init(
                 shape=(1, self.num_weights), dtype='float32'),
@@ -111,8 +112,7 @@ class VQC(tf.keras.layers.Layer):
 
     def build_model(self):
         qubits = cirq.GridQubit.rect(1, self.num_qubits)
-        readout = cirq.GridQubit(-1, -1)
-        readouts = [cirq.Z(readout)]
+        readouts = [cirq.Z(readout) for readout in qubits]
 
         # Sympy symbols for encoding inputs
         encoding_params = sympy.symbols(f'x_0:{self.num_qubits}')
@@ -122,14 +122,11 @@ class VQC(tf.keras.layers.Layer):
         ansatz_params = sympy.symbols('θ_0:{}'.format(self.num_ansatz_params))
         ansatz_params = np.asarray(ansatz_params).reshape(
             (self.ansatz_copies + 1, self.num_qubits, 2))
-        readout_params = sympy.symbols(
-            'readout_0:{}'.format(self.num_readout_params))
-        readout_params = np.asarray(readout_params)
 
         # Define explicit symbol order to follow the alphabetical order of their symbol names,
         # as processed by the ControlledPQC.
-        symbols = [str(symb) for symb in list(encoding_params.flat) +
-                   list(ansatz_params.flat) + list(readout_params.flat)]
+        symbols = [str(symb) for symb in list(
+            encoding_params.flat) + list(ansatz_params.flat)]
         self.indices = tf.constant([sorted(symbols).index(a) for a in symbols])
 
         # Create circuit
@@ -140,9 +137,6 @@ class VQC(tf.keras.layers.Layer):
         # Variational layer
         circuit += EfficientSU2(qubits, ansatz_params,
                                 copies=self.ansatz_copies)
-        # Preparing readout qubit
-        circuit += cirq.Circuit(cirq.XX(q, readout) **
-                                param for q, param in zip(qubits, readout_params))
 
         pqc = tfq.layers.ControlledPQC(circuit, readouts)
 
